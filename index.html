@@ -3,13 +3,13 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Skycast — Rainfall &amp; Forecast</title>
+<title>SPARKcast — Rainfall &amp; Forecast</title>
 <meta name="description" content="See how much rain fell in the last 14 days, the expected rainfall for the next 14 days, and how the coming weather compares to today." />
 <meta name="theme-color" content="#0b1020" />
-<meta property="og:title" content="Skycast — Rainfall &amp; Forecast" />
+<meta property="og:title" content="SPARKcast — Rainfall &amp; Forecast" />
 <meta property="og:description" content="Rainfall for the last 14 days, the next 14 days, and how the forecast compares to today." />
 <meta property="og:type" content="website" />
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%F0%9F%8C%A6%EF%B8%8F%3C/text%3E%3C/svg%3E" />
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect width='24' height='24' rx='5' fill='%230b1020'/%3E%3Cpath d='M13 2L3 14h7l-1 8L21 10h-7z' fill='%23FFD23F'/%3E%3C/svg%3E" />
 <style>
   :root {
     --bg-1: #0b1020;
@@ -78,7 +78,7 @@
     font-size: 1.05rem;
     letter-spacing: 0.3px;
   }
-  .brand .logo { font-size: 1.4rem; }
+  .brand .logo { display: inline-flex; align-items: center; filter: drop-shadow(0 0 6px rgba(255, 210, 63, 0.45)); }
 
   .loc-list {
     list-style: none;
@@ -291,6 +291,7 @@
   .card .sub { color: var(--muted); font-size: 0.85rem; }
   .metric-row {
     display: flex;
+    flex-wrap: wrap;
     justify-content: space-between;
     gap: 14px;
     margin-top: 14px;
@@ -394,7 +395,7 @@
 <div class="app">
   <!-- Sidebar -->
   <aside class="sidebar">
-    <div class="brand"><span class="logo">🌦️</span> Skycast</div>
+    <div class="brand"><span class="logo"><svg width="22" height="22" viewBox="0 0 24 24" aria-hidden="true"><defs><linearGradient id="sparkBolt" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#FFE45E"/><stop offset="1" stop-color="#FF9E2C"/></linearGradient></defs><path d="M13 2L3 14h7l-1 8L21 10h-7z" fill="url(#sparkBolt)"/></svg></span> SPARKcast</div>
 
     <div class="search">
       <input id="searchInput" type="text" placeholder="Add a city…" autocomplete="off" />
@@ -615,6 +616,11 @@ function analyze(data) {
   const todayHi = today && today.hi != null ? today.hi : (pastHi != null ? pastHi : null);
   const tempDiff = (futureHi != null && todayHi != null) ? futureHi - todayHi : null;
 
+  const tomorrow = future.length ? future[0] : null;
+  const tomorrowHi = tomorrow && tomorrow.hi != null ? tomorrow.hi : null;
+  const tomorrowLo = tomorrow && tomorrow.lo != null ? tomorrow.lo : null;
+  const tomorrowDiff = (tomorrowHi != null && todayHi != null) ? tomorrowHi - todayHi : null;
+
   // Hourly series (next 24 hours from the current hour)
   let hourlyNext = [];
   let next24Rain = 0, maxNext24Pop = 0;
@@ -642,6 +648,7 @@ function analyze(data) {
 
   return { days, past, future, today, pastRain, futureRain, rainDiff, rainPct,
            wetPastDays, wetFutureDays, pastHi, futureHi, todayHi, tempDiff,
+           tomorrow, tomorrowHi, tomorrowLo, tomorrowDiff,
            hourlyNext, next24Rain, maxNext24Pop, maxFuturePop,
            current: data.current || null };
 }
@@ -753,9 +760,20 @@ function rainDiffPill(a) {
 function tempDiffPill(a) {
   if (a.tempDiff == null) return "";
   const dlt = tempDelta(a.tempDiff);
-  let cls = "diff-same", txt = "Similar temperatures to today";
-  if (dlt <= -1) { cls = "diff-cooler"; txt = "🧊 " + Math.abs(dlt) + "° " + tempLabel().replace("°", "") + " cooler than today, on average"; }
-  else if (dlt >= 1) { cls = "diff-warmer"; txt = "🔥 " + Math.abs(dlt) + "° " + tempLabel().replace("°", "") + " warmer than today, on average"; }
+  let cls = "diff-same", txt = "Next 2 weeks similar to today, on average";
+  if (dlt <= -1) { cls = "diff-cooler"; txt = "🧊 " + Math.abs(dlt) + "° cooler than today, on average"; }
+  else if (dlt >= 1) { cls = "diff-warmer"; txt = "🔥 " + Math.abs(dlt) + "° warmer than today, on average"; }
+  return '<span class="diff-pill ' + cls + '">' + txt + '</span>';
+}
+
+function tomorrowPill(a) {
+  if (a.tomorrowHi == null || a.todayHi == null) return "";
+  const dlt = tempDelta(a.tomorrowDiff);
+  const hi = tempDeg(a.tomorrowHi, true);
+  const lo = a.tomorrowLo != null ? ' / low ' + tempDeg(a.tomorrowLo, true) : '';
+  let cls = "diff-same", txt = "Tomorrow: " + hi + lo + " — about the same as today";
+  if (dlt <= -1) { cls = "diff-cooler"; txt = "🧊 Tomorrow: " + hi + lo + " — " + Math.abs(dlt) + "° cooler than today"; }
+  else if (dlt >= 1) { cls = "diff-warmer"; txt = "🔥 Tomorrow: " + hi + lo + " — " + Math.abs(dlt) + "° warmer than today"; }
   return '<span class="diff-pill ' + cls + '">' + txt + '</span>';
 }
 
@@ -804,7 +822,7 @@ function renderMain() {
   const main = document.getElementById("main");
 
   if (!state.locations.length) {
-    main.innerHTML = '<div class="empty"><h2>Welcome to Skycast</h2>' +
+    main.innerHTML = '<div class="empty"><h2>Welcome to SPARKcast</h2>' +
       '<p>Search a city above or tap <strong>My location</strong>.</p>' +
       '<p style="margin-top:14px;color:#9fb0cc;font-size:0.85rem">Shows rainfall for the past 14 days, the next 14 days, and how the coming weather compares to today.</p></div>';
     return;
@@ -870,13 +888,15 @@ function renderMain() {
       '</section>' +
 
       '<section class="card">' +
-        '<h3>Temperature — today vs. forecast</h3>' +
+        '<h3>Temperature — today, tomorrow &amp; outlook</h3>' +
         '<div class="big">' + (a.todayHi != null ? tempDeg(a.todayHi, true) : '—') + '</div>' +
-        '<div class="sub">Today&rsquo;s high' + (a.futureHi != null ? ' · forecast avg high ' + tempDeg(a.futureHi, true) : '') + '</div>' +
+        '<div class="sub">Today: H ' + (a.today && a.today.hi != null ? tempDeg(a.today.hi) : '—') + ' / L ' + (a.today && a.today.lo != null ? tempDeg(a.today.lo) : '—') + (a.futureHi != null ? ' · 14-day avg high ' + tempDeg(a.futureHi, true) : '') + '</div>' +
         '<div class="metric-row">' +
+          '<div class="metric"><div class="k">Tomorrow high</div><div class="v">' + (a.tomorrowHi != null ? tempDeg(a.tomorrowHi, true) : '—') + '</div></div>' +
           '<div class="metric"><div class="k">Past 14d avg high</div><div class="v">' + (a.pastHi != null ? tempDeg(a.pastHi, true) : '—') + '</div></div>' +
           '<div class="metric"><div class="k">Next 14d avg high</div><div class="v">' + (a.futureHi != null ? tempDeg(a.futureHi, true) : '—') + '</div></div>' +
         '</div>' +
+        '<div>' + tomorrowPill(a) + '</div>' +
         '<div>' + tempDiffPill(a) + '</div>' +
       '</section>' +
 
