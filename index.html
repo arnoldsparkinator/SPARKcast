@@ -585,7 +585,7 @@ async function reverseGeocode(lat, lon) {
 function analyze(data) {
   const d = data.daily;
   const dates = d.time;
-  const todayIso = new Date().toLocaleDateString("en-CA"); // YYYY-MM-DD local
+  const todayIso = (data.current && data.current.time) ? data.current.time.slice(0, 10) : new Date().toLocaleDateString("en-CA"); // YYYY-MM-DD, location local
 
   const days = dates.map((iso, i) => ({
     iso,
@@ -621,6 +621,11 @@ function analyze(data) {
   const tomorrowLo = tomorrow && tomorrow.lo != null ? tomorrow.lo : null;
   const tomorrowDiff = (tomorrowHi != null && todayHi != null) ? tomorrowHi - todayHi : null;
 
+  const yesterday = past.length ? past[past.length - 1] : null;
+  const yesterdayHi = yesterday && yesterday.hi != null ? yesterday.hi : null;
+  const yesterdayLo = yesterday && yesterday.lo != null ? yesterday.lo : null;
+  const yesterdayDiff = (todayHi != null && yesterdayHi != null) ? todayHi - yesterdayHi : null;
+
   // Hourly series (next 24 hours from the current hour)
   let hourlyNext = [];
   let next24Rain = 0, maxNext24Pop = 0;
@@ -649,6 +654,7 @@ function analyze(data) {
   return { days, past, future, today, pastRain, futureRain, rainDiff, rainPct,
            wetPastDays, wetFutureDays, pastHi, futureHi, todayHi, tempDiff,
            tomorrow, tomorrowHi, tomorrowLo, tomorrowDiff,
+           yesterday, yesterdayHi, yesterdayLo, yesterdayDiff,
            hourlyNext, next24Rain, maxNext24Pop, maxFuturePop,
            current: data.current || null };
 }
@@ -777,6 +783,17 @@ function tomorrowPill(a) {
   return '<span class="diff-pill ' + cls + '">' + txt + '</span>';
 }
 
+function yesterdayPill(a) {
+  if (a.yesterdayHi == null || a.todayHi == null) return "";
+  const dlt = tempDelta(a.yesterdayDiff);
+  const hi = tempDeg(a.todayHi, true);
+  const lo = a.today && a.today.lo != null ? ' / low ' + tempDeg(a.today.lo, true) : '';
+  let cls = "diff-same", txt = "Today: " + hi + lo + " — about the same as yesterday";
+  if (dlt <= -1) { cls = "diff-cooler"; txt = "🧊 Today: " + hi + lo + " — " + Math.abs(dlt) + "° colder than yesterday"; }
+  else if (dlt >= 1) { cls = "diff-warmer"; txt = "🔥 Today: " + hi + lo + " — " + Math.abs(dlt) + "° warmer than yesterday"; }
+  return '<span class="diff-pill ' + cls + '">' + txt + '</span>';
+}
+
 function wetDaysPill(a) {
   const d = a.wetFutureDays - a.wetPastDays;
   let cls = "diff-same", txt = "Same number of wet days as the last two weeks";
@@ -888,14 +905,15 @@ function renderMain() {
       '</section>' +
 
       '<section class="card">' +
-        '<h3>Temperature — today, tomorrow &amp; outlook</h3>' +
+        '<h3>Temperature — yesterday, today &amp; outlook</h3>' +
         '<div class="big">' + (a.todayHi != null ? tempDeg(a.todayHi, true) : '—') + '</div>' +
         '<div class="sub">Today: H ' + (a.today && a.today.hi != null ? tempDeg(a.today.hi) : '—') + ' / L ' + (a.today && a.today.lo != null ? tempDeg(a.today.lo) : '—') + (a.futureHi != null ? ' · 14-day avg high ' + tempDeg(a.futureHi, true) : '') + '</div>' +
         '<div class="metric-row">' +
+          '<div class="metric"><div class="k">Yesterday high</div><div class="v">' + (a.yesterdayHi != null ? tempDeg(a.yesterdayHi, true) : '—') + '</div></div>' +
           '<div class="metric"><div class="k">Tomorrow high</div><div class="v">' + (a.tomorrowHi != null ? tempDeg(a.tomorrowHi, true) : '—') + '</div></div>' +
-          '<div class="metric"><div class="k">Past 14d avg high</div><div class="v">' + (a.pastHi != null ? tempDeg(a.pastHi, true) : '—') + '</div></div>' +
           '<div class="metric"><div class="k">Next 14d avg high</div><div class="v">' + (a.futureHi != null ? tempDeg(a.futureHi, true) : '—') + '</div></div>' +
         '</div>' +
+        '<div>' + yesterdayPill(a) + '</div>' +
         '<div>' + tomorrowPill(a) + '</div>' +
         '<div>' + tempDiffPill(a) + '</div>' +
       '</section>' +
