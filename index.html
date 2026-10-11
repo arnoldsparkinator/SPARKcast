@@ -130,6 +130,7 @@
   }
   .loc-item:hover .li-remove { opacity: 1; }
   .li-remove:hover { background: rgba(255, 255, 255, 0.15); color: #fff; }
+  @media (hover: none) { .li-remove { opacity: 0.85; } }
 
   .search {
     display: flex;
@@ -177,6 +178,13 @@
   .results li:last-child { border-bottom: none; }
   .results li:hover { background: var(--card-strong); }
   .results li .r-sub { color: var(--muted); font-size: 0.75rem; }
+
+  .results li, .loc-item, .side-actions button, .search button, .unit-toggle button {
+    touch-action: manipulation;
+    -webkit-tap-highlight-color: transparent;
+    -webkit-user-select: none;
+    user-select: none;
+  }
 
   .side-actions { display: flex; gap: 8px; flex-wrap: wrap; }
   .side-actions button {
@@ -398,7 +406,7 @@
     <div class="brand"><span class="logo"><svg width="22" height="22" viewBox="0 0 24 24" aria-hidden="true"><defs><linearGradient id="sparkBolt" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#FFE45E"/><stop offset="1" stop-color="#FF9E2C"/></linearGradient></defs><path d="M13 2L3 14h7l-1 8L21 10h-7z" fill="url(#sparkBolt)"/></svg></span> SPARKcast</div>
 
     <div class="search">
-      <input id="searchInput" type="text" placeholder="Add a city…" autocomplete="off" />
+      <input id="searchInput" type="search" placeholder="Add a city…" autocomplete="off" autocapitalize="words" enterkeyhint="search" />
       <button id="searchBtn" title="Search">🔍</button>
     </div>
     <ul class="results" id="searchResults"></ul>
@@ -531,6 +539,29 @@ function escapeHtml(s) {
 function fmtDate(iso, opts) {
   const d = new Date(iso + "T12:00:00");
   return d.toLocaleDateString(undefined, opts || { weekday: "short", month: "short", day: "numeric" });
+}
+
+// Tap handler that works on touch devices (and iOS while the keyboard is open):
+// fires on pointerup only if the finger didn't move (so scrolling still works).
+function onTap(el, handler) {
+  if (!window.PointerEvent) { el.addEventListener("click", handler); return; }
+  let sx = 0, sy = 0, moved = false, down = false;
+  el.addEventListener("pointerdown", (e) => {
+    if (e.pointerType === "mouse" && e.button !== 0) return;
+    down = true; moved = false; sx = e.clientX; sy = e.clientY;
+  });
+  el.addEventListener("pointermove", (e) => {
+    if (down && (Math.abs(e.clientX - sx) > 10 || Math.abs(e.clientY - sy) > 10)) moved = true;
+  });
+  el.addEventListener("pointercancel", () => { down = false; moved = true; });
+  el.addEventListener("pointerup", (e) => {
+    if (!down) return;
+    down = false;
+    if (moved) return;
+    if (e.pointerType === "mouse" && e.button !== 0) return;
+    e.preventDefault();
+    handler(e);
+  });
 }
 
 /* ============================ Data fetching ============================ */
@@ -686,12 +717,9 @@ function renderSidebar() {
       right +
       '<button class="li-remove" title="Remove" data-remove="' + loc.id + '">✕</button>';
 
-    li.addEventListener("click", (e) => {
-      if (e.target.dataset.remove) {
-        e.stopPropagation();
-        removeLocation(e.target.dataset.remove);
-        return;
-      }
+    onTap(li, (e) => {
+      const rm = e.target.closest ? e.target.closest("[data-remove]") : null;
+      if (rm) { removeLocation(rm.dataset.remove); return; }
       selectLocation(loc.id);
     });
     list.appendChild(li);
@@ -1032,44 +1060,53 @@ function wireSearch() {
 
   function clearResults() { results.innerHTML = ""; }
 
+  let currentItems = [];
+  function choose(i) {
+    const it = currentItems[i];
+    if (!it) return;
+    addLocation({
+      name: it.name,
+      admin1: it.admin1 || "",
+      country: it.country || "",
+      latitude: it.latitude,
+      longitude: it.longitude,
+    });
+    input.value = "";
+    clearResults();
+  }
+
   async function runSearch() {
     const q = input.value.trim();
     if (q.length < 2) { clearResults(); return; }
     results.innerHTML = '<li style="color:#9fb0cc">Searching…</li>';
     try {
       const items = await geocode(q);
+      currentItems = items;
       if (!items.length) { results.innerHTML = '<li style="color:#9fb0cc">No matches</li>'; return; }
       results.innerHTML = items.map((it, i) =>
         '<li data-i="' + i + '">' + escapeHtml(it.name) +
         '<div class="r-sub">' + escapeHtml([it.admin1, it.country].filter(Boolean).join(", ")) + '</div></li>'
       ).join("");
-      Array.from(results.children).forEach((li, i) => {
-        li.addEventListener("click", () => {
-          const it = items[i];
-          addLocation({
-            name: it.name,
-            admin1: it.admin1 || "",
-            country: it.country || "",
-            latitude: it.latitude,
-            longitude: it.longitude,
-          });
-          input.value = "";
-          clearResults();
-        });
-      });
+      Array.from(results.children).forEach((li, i) => onTap(li, () => choose(i)));
     } catch (e) {
       results.innerHTML = '<li style="color:#ffb4b4">Search error</li>';
     }
   }
 
-  document.getElementById("searchBtn").addEventListener("click", runSearch);
+  onTap(document.getElementById("searchBtn"), runSearch);
   input.addEventListener("input", () => { clearTimeout(searchTimer); searchTimer = setTimeout(runSearch, 350); });
-  input.addEventListener("keydown", (e) => { if (e.key === "Enter") { clearTimeout(searchTimer); runSearch(); } });
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      if (currentItems.length) choose(0);
+      else { clearTimeout(searchTimer); runSearch(); }
+    }
+  });
   document.addEventListener("click", (e) => {
     if (!results.contains(e.target) && e.target !== input) clearResults();
   });
 
-  document.getElementById("useLocationBtn").addEventListener("click", () => {
+  onTap(document.getElementById("useLocationBtn"), () => {
     if (!navigator.geolocation) { alert("Geolocation is not supported by this browser."); return; }
     const btn = document.getElementById("useLocationBtn");
     btn.textContent = "📍 Locating…";
