@@ -377,6 +377,11 @@
     background: var(--card);
   }
   .error { color: #ffb4b4; border-color: rgba(255, 120, 120, 0.4); }
+  .btn {
+    background: var(--accent, #4ea1ff); color: #0b1220; border: 0; border-radius: 999px;
+    padding: 8px 20px; font: inherit; font-weight: 600; cursor: pointer;
+  }
+  .btn:hover { filter: brightness(1.08); }
 
   .loading { display: flex; align-items: center; gap: 10px; color: var(--muted); padding: 40px 0; justify-content: center; }
   .spinner {
@@ -636,7 +641,7 @@ function onTap(el, handler) {
 }
 
 /* ============================ Data fetching ============================ */
-async function fetchWeather(loc) {
+async function fetchWeather(loc, model) {
   const u = new URL(FORECAST_URL);
   u.searchParams.set("latitude", loc.latitude);
   u.searchParams.set("longitude", loc.longitude);
@@ -645,8 +650,8 @@ async function fetchWeather(loc) {
   u.searchParams.set("current", "temperature_2m,weather_code,precipitation");
   u.searchParams.set("past_days", "14");
   u.searchParams.set("forecast_days", "15");
-  const model = resolveModel(loc);
-  if (model && model !== "best_match") u.searchParams.set("models", model);
+  const use = model || resolveModel(loc);
+  if (use && use !== "best_match") u.searchParams.set("models", use);
   u.searchParams.set("timezone", "auto");
 
   const res = await fetch(u.toString());
@@ -955,8 +960,13 @@ function renderMain() {
 
   const cached = state.cache[loc.id];
   if (!cached) {
-    main.innerHTML = '<div class="loading"><div class="spinner"></div> Loading…</div>';
-    if (state.loadingId !== loc.id) ensureWeather(loc);
+    if (weatherErrors[loc.id]) {
+      main.innerHTML = weatherErrorHTML(loc, weatherErrors[loc.id]);
+      wireWeatherRetry(loc);
+    } else {
+      main.innerHTML = '<div class="loading"><div class="spinner"></div> Loading…</div>';
+      if (state.loadingId !== loc.id) ensureWeather(loc);
+    }
     return;
   }
 
@@ -978,7 +988,7 @@ function renderMain() {
         '<div>' +
           '<div class="hero-place">' + escapeHtml(placeName(loc)) + '</div>' +
           '<div class="hero-sub">' + escapeHtml(loc.country || "") + ' &middot; updated ' + updated + '</div>' +
-          '<div class="hero-model">Rain forecast from ' + escapeHtml(modelName(resolveModel(loc))) + '</div>' +
+          '<div class="hero-model">Rain forecast from ' + escapeHtml(modelName(cached.model || resolveModel(loc))) + '</div>' +
         '</div>' +
         '<div class="unit-toggle">' +
           '<button id="cBtn" class="' + (state.unit === "c" ? "on" : "") + '">°C</button>' +
@@ -1129,6 +1139,7 @@ function autoChooseModel(loc, data) {
   state.modelChoice[loc.id] = { id: best, manual: false };
   saveState();
   delete state.cache[loc.id];   // weather cache was fetched with the old model
+  delete weatherErrors[loc.id];
   return true;
 }
 function onModelPick(loc, val) {
@@ -1136,6 +1147,7 @@ function onModelPick(loc, val) {
   state.modelChoice[loc.id] = val ? { id: val, manual: true } : { id: best, manual: false };
   saveState();
   delete state.cache[loc.id];
+  delete weatherErrors[loc.id];
   if (state.selectedId === loc.id) ensureWeather(loc);
   renderMain();
 }
@@ -1177,30 +1189,57 @@ function paintModels(html, loc) {
 }
 
 // Fetch weather for a location if not cached, then re-render. Safe to call often.
+const weatherErrors = {};   // locId -> message when the weather tab failed to load
+
+function weatherErrorHTML(loc, msg) {
+  return '<div class="error">Failed to load weather.<br>' + escapeHtml(msg || "") + '</div>' +
+    '<div style="text-align:center;margin-top:14px">' +
+      '<button class="btn" id="retryWeather">Try again</button>' +
+    '</div>';
+}
+function wireWeatherRetry(loc) {
+  const b = document.getElementById("retryWeather");
+  if (b) onTap(b, () => { delete weatherErrors[loc.id]; ensureWeather(loc); });
+}
+
+// Fetch weather for a location if not cached, then re-render. Retries a few
+// times and falls back to best_match if a specific model keeps failing.
 async function ensureWeather(loc) {
   if (!loc || state.loadingId === loc.id) return;
   state.loadingId = loc.id;
   renderSidebar();
   renderMain();
-  try {
-    const data = await fetchWeather(loc);
-    state.cache[loc.id] = { data, fetchedAt: Date.now() };
-  } catch (e) {
-    state.loadingId = null;
-    renderSidebar();
+
+  const primary = resolveModel(loc);
+  const plan = [primary, primary, primary];
+  if (primary !== "best_match") plan.push("best_match", "best_match");
+
+  let data = null, modelUsed = null, lastErr = null;
+  for (let i = 0; i < plan.length && !data; i++) {
+    if (i) await new Promise(r => setTimeout(r, 600 + 500 * i));
+    try { data = await fetchWeather(loc, plan[i]); modelUsed = plan[i]; }
+    catch (e) { lastErr = e; }
+  }
+
+  state.loadingId = null;
+  renderSidebar();
+
+  if (!data) {
+    weatherErrors[loc.id] = lastErr ? lastErr.message : "Weather request failed";
     if (state.selectedId === loc.id) {
-      document.getElementById("main").innerHTML = '<div class="error">Failed to load weather.<br>' + escapeHtml(e.message) + '</div>';
+      document.getElementById("main").innerHTML = weatherErrorHTML(loc, weatherErrors[loc.id]);
+      wireWeatherRetry(loc);
     }
     return;
   }
-  state.loadingId = null;
-  renderSidebar();
+  delete weatherErrors[loc.id];
+  state.cache[loc.id] = { data, fetchedAt: Date.now(), model: modelUsed };
   if (state.selectedId === loc.id) renderMain();
 }
 
 function modelsErrorHTML(msg) {
   return '<section class="card"><div class="error" style="margin:0">Model comparison unavailable.<br>' +
-    escapeHtml(msg) + '</div><p class="sub-note">Needs the forecast, archive and historical-forecast services to be reachable.</p></section>';
+    escapeHtml(msg) + '</div><p class="sub-note">Needs the forecast, archive and previous-runs services to be reachable.</p></section>';
 }
 
 async function loadModelsData(loc) {
