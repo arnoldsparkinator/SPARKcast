@@ -429,6 +429,14 @@
   }
   .mini { height: 8px; border-radius: 4px; display: inline-block; vertical-align: middle; min-width: 2px; }
   .sub-note { color: var(--muted); font-size: 0.78rem; margin-top: 10px; line-height: 1.5; }
+  .hero-model { color: #9fd8ff; font-size: 0.78rem; margin-top: 4px; }
+  .model-pick { display: flex; align-items: center; gap: 8px; margin-top: 12px; font-size: 0.82rem; color: var(--muted); flex-wrap: wrap; }
+  .model-pick select {
+    background: #12203a; color: var(--text); border: 1px solid #2a3d5c; border-radius: 8px;
+    padding: 6px 10px; font-size: 0.82rem; font-family: inherit; cursor: pointer; max-width: 100%;
+  }
+  tr.active td { background: rgba(80, 220, 130, 0.08); }
+  tr.active .mname::after { content: " · used for forecast"; color: #a9f5c5; font-weight: 600; font-size: 0.72rem; }
 
   @media (max-width: 880px) {
     .app { grid-template-columns: 1fr; }
@@ -494,7 +502,7 @@ const FEEDS = [
   { id: "ecmwf_ifs025",         name: "ECMWF IFS",               tag: "ECMWF",         color: "#6ee7b7" },
   { id: "icon_seamless",        name: "DWD ICON",                tag: "ICON",          color: "#ffd166" },
   { id: "gfs_seamless",         name: "NOAA GFS",                tag: "GFS",           color: "#f78da7" },
-  { id: "meteofrance_seamless", name: "Meteo-France",            tag: "MF",            color: "#b388ff" },
+  { id: "meteofrance_seamless", name: "Meteo-France",            tag: "MF",            color: "#b388ff", noPop: true },
 ];
 
 /* ============================ State ============================ */
@@ -505,6 +513,7 @@ const state = {
   precip: "mm",           // 'mm' | 'in'
   cache: {},              // id -> { data, fetchedAt }
   modelCache: {},         // id -> { at, truth, forecast, scores } | { error }
+  modelChoice: {},        // id -> { id: feedId, manual: bool }
   loadingId: null,
   tab: "rain",            // 'rain' | 'models'
 };
@@ -519,6 +528,7 @@ function loadState() {
       state.unit = parsed.unit || "c";
       state.precip = parsed.precip || "mm";
       state.tab = parsed.tab || "rain";
+      state.modelChoice = parsed.modelChoice || {};
     }
   } catch (e) { /* ignore */ }
 }
@@ -529,6 +539,7 @@ function saveState() {
     unit: state.unit,
     precip: state.precip,
     tab: state.tab,
+    modelChoice: state.modelChoice,
   }));
 }
 
@@ -634,6 +645,8 @@ async function fetchWeather(loc) {
   u.searchParams.set("current", "temperature_2m,weather_code,precipitation");
   u.searchParams.set("past_days", "14");
   u.searchParams.set("forecast_days", "15");
+  const model = resolveModel(loc);
+  if (model && model !== "best_match") u.searchParams.set("models", model);
   u.searchParams.set("timezone", "auto");
 
   const res = await fetch(u.toString());
@@ -943,6 +956,7 @@ function renderMain() {
   const cached = state.cache[loc.id];
   if (!cached) {
     main.innerHTML = '<div class="loading"><div class="spinner"></div> Loading…</div>';
+    if (state.loadingId !== loc.id) ensureWeather(loc);
     return;
   }
 
@@ -964,6 +978,7 @@ function renderMain() {
         '<div>' +
           '<div class="hero-place">' + escapeHtml(placeName(loc)) + '</div>' +
           '<div class="hero-sub">' + escapeHtml(loc.country || "") + ' &middot; updated ' + updated + '</div>' +
+          '<div class="hero-model">Rain forecast from ' + escapeHtml(modelName(resolveModel(loc))) + '</div>' +
         '</div>' +
         '<div class="unit-toggle">' +
           '<button id="cBtn" class="' + (state.unit === "c" ? "on" : "") + '">°C</button>' +
@@ -1079,11 +1094,57 @@ function daysAgo(n) { const d = new Date(); d.setDate(d.getDate() - n); return d
 
 let modelsFetching = null;
 
+function modelName(id) {
+  const f = FEEDS.filter(x => x.id === id)[0];
+  return f ? f.name : (id || "best match");
+}
+function resolveModel(loc) {
+  const c = state.modelChoice[loc.id];
+  return (c && c.id) ? c.id : "best_match";
+}
+function bestFeedId(data) {
+  const ranked = ((data && data.scores) || []).filter(s => !s.unavailable && s.n).sort((a, b) => a.mae - b.mae);
+  return ranked.length ? ranked[0].id : null;
+}
+function feedHasNoPop(id) {
+  const f = FEEDS.filter(x => x.id === id)[0];
+  return !!(f && f.noPop);
+}
+// Model that actually drives the Rainfall tab: lowest MAE, but skip feeds with
+// no rain-probability data (they would otherwise show a misleading 0% chance).
+function autoModelId(data) {
+  const ranked = ((data && data.scores) || []).filter(s => !s.unavailable && s.n).sort((a, b) => a.mae - b.mae);
+  if (!ranked.length) return null;
+  const withPop = ranked.filter(s => !feedHasNoPop(s.id));
+  return (withPop.length ? withPop[0] : ranked[0]).id;
+}
+// Pick the chosen feed for this location (unless the user chose manually).
+function autoChooseModel(loc, data) {
+  const best = autoModelId(data);
+  if (!best) return false;
+  const prev = state.modelChoice[loc.id];
+  if (prev && prev.manual) return false;
+  const effective = prev ? prev.id : "best_match";
+  if (effective === best) return false;   // no change; no need to refetch
+  state.modelChoice[loc.id] = { id: best, manual: false };
+  saveState();
+  delete state.cache[loc.id];   // weather cache was fetched with the old model
+  return true;
+}
+function onModelPick(loc, val) {
+  const best = autoModelId(state.modelCache[loc.id]) || "best_match";
+  state.modelChoice[loc.id] = val ? { id: val, manual: true } : { id: best, manual: false };
+  saveState();
+  delete state.cache[loc.id];
+  if (state.selectedId === loc.id) ensureWeather(loc);
+  renderMain();
+}
+
 async function ensureModels(loc) {
   const root = document.getElementById("viewModels");
   if (!root) return;
   const cached = state.modelCache[loc.id];
-  if (cached && !cached.error) { root.innerHTML = modelsHTML(cached, loc); return; }
+  if (cached && !cached.error) { paintModels(modelsHTML(cached, loc), loc); return; }
   if (cached && cached.error && modelsFetching !== loc.id) { root.innerHTML = modelsErrorHTML(cached.error); return; }
   if (modelsFetching === loc.id) return;
   modelsFetching = loc.id;
@@ -1092,14 +1153,49 @@ async function ensureModels(loc) {
     const data = await loadModelsData(loc);
     state.modelCache[loc.id] = data;
     modelsFetching = null;
+    if (autoChooseModel(loc, data)) { renderMain(); return; }
     const r = document.getElementById("viewModels");
-    if (r && state.tab === "models" && state.selectedId === loc.id) r.innerHTML = modelsHTML(data, loc);
+    if (r && state.tab === "models" && state.selectedId === loc.id) paintModels(modelsHTML(data, loc), loc);
   } catch (e) {
     modelsFetching = null;
     state.modelCache[loc.id] = { error: e.message || String(e) };
     const r = document.getElementById("viewModels");
     if (r && state.tab === "models") r.innerHTML = modelsErrorHTML(e.message || String(e));
   }
+}
+
+function paintModels(html, loc) {
+  const root = document.getElementById("viewModels");
+  if (!root) return;
+  root.innerHTML = html;
+  const sel = document.getElementById("modelPick");
+  if (sel) {
+    const cur = state.modelChoice[loc.id];
+    sel.value = (cur && cur.manual) ? cur.id : "";
+    sel.addEventListener("change", () => onModelPick(loc, sel.value));
+  }
+}
+
+// Fetch weather for a location if not cached, then re-render. Safe to call often.
+async function ensureWeather(loc) {
+  if (!loc || state.loadingId === loc.id) return;
+  state.loadingId = loc.id;
+  renderSidebar();
+  renderMain();
+  try {
+    const data = await fetchWeather(loc);
+    state.cache[loc.id] = { data, fetchedAt: Date.now() };
+  } catch (e) {
+    state.loadingId = null;
+    renderSidebar();
+    if (state.selectedId === loc.id) {
+      document.getElementById("main").innerHTML = '<div class="error">Failed to load weather.<br>' + escapeHtml(e.message) + '</div>';
+    }
+    return;
+  }
+  state.loadingId = null;
+  renderSidebar();
+  if (state.selectedId === loc.id) renderMain();
 }
 
 function modelsErrorHTML(msg) {
@@ -1266,9 +1362,14 @@ function modelsHTML(m, loc) {
   const bestId = ranked.length ? ranked[0].id : null;
   const nDays = ranked.length ? Math.max.apply(null, ranked.map(s => s.n)) : Object.keys(truth.days).length;
 
+  const cur = state.modelChoice[loc.id];
+  const autoId = autoModelId(m) || bestId || "best_match";
+  const curId = (cur && cur.manual) ? cur.id : autoId;
+
   let accRows = ranked.map(s => {
     const badge = s.id === bestId ? '<span class="win-badge">most accurate</span>' : '';
-    return '<tr class="' + (s.id === bestId ? "best" : "") + '">' +
+    const cls = [(s.id === bestId ? "best" : ""), (s.id === curId ? "active" : "")].filter(Boolean).join(" ");
+    return '<tr class="' + cls + '">' +
       '<td><span class="mname">' + escapeHtml(s.name) + '</span>' + badge +
         '<div class="mtag">' + escapeHtml(s.tag) + '</div></td>' +
       '<td class="num">' + s.mae.toFixed(2) + '</td>' +
@@ -1309,13 +1410,19 @@ function modelsHTML(m, loc) {
         '<div class="chart-legend"><span>updated ' + updated + '</span></div></div>' +
       '<div class="sub">Observed rain: <strong style="color:#cfe6ff">' + precipStr(truthTotal) + ' ' + precipLabel() + '</strong>' +
         ' &middot; ' + escapeHtml(truth.label) + (periodLabel(truth.days) ? ' &middot; ' + periodLabel(truth.days) : '') + '</div>' +
+      '<div class="model-pick"><label for="modelPick">Rain forecast model:</label>' +
+        '<select id="modelPick">' +
+          '<option value="">Auto — ' + escapeHtml(modelName(autoId)) + '</option>' +
+          FEEDS.map(fd => '<option value="' + fd.id + '">' + escapeHtml(fd.name) + '</option>').join("") +
+        '</select></div>' +
       '<table class="mtable"><thead><tr>' +
         '<th>Feed</th><th class="num">MAE</th><th class="num">Bias</th><th class="num">Wet-day agree</th>' +
       '</tr></thead><tbody>' + accRows + '</tbody></table>' +
       '<p class="sub-note">Each feed\'s <strong>1-day-ahead</strong> rain forecast (issued 24 h before each day) compared with observed rain. ' +
         '<strong>MAE</strong> = average gap in ' + precipLabel() + ' (lower is better). ' +
         '<strong>Bias</strong> = average tendency (+ over-forecasts rain, − under-forecasts). ' +
-        '<strong>Wet-day agree</strong> = how often feed and reality matched on a wet (≥ 1 ' + precipLabel() + ') day.</p>' +
+        '<strong>Wet-day agree</strong> = how often feed and reality matched on a wet (≥ 1 ' + precipLabel() + ') day. ' +
+        'The <strong>Rainfall</strong> tab uses the model selected above (auto = the lowest MAE).</p>' +
       (unavailable.length ? '<p class="sub-note">No archived data for: ' + unavailable.map(u => escapeHtml(u.name)).join(", ") + '.</p>' : '') +
     '</section>' +
 
@@ -1339,24 +1446,7 @@ async function selectLocation(id) {
     renderMain();
     return;
   }
-
-  state.loadingId = id;
-  renderSidebar();
-  renderMain();
-
-  try {
-    const loc = state.locations.find(l => l.id === id);
-    const data = await fetchWeather(loc);
-    state.cache[id] = { data, fetchedAt: Date.now() };
-  } catch (e) {
-    state.loadingId = null;
-    renderSidebar();
-    document.getElementById("main").innerHTML = '<div class="error">Failed to load weather.<br>' + escapeHtml(e.message) + '</div>';
-    return;
-  }
-  state.loadingId = null;
-  renderSidebar();
-  renderMain();
+  ensureWeather(state.locations.find(l => l.id === id));
 }
 
 function addLocation(loc) {
@@ -1374,6 +1464,7 @@ function removeLocation(id) {
   state.locations = state.locations.filter(l => l.id !== id);
   delete state.cache[id];
   delete state.modelCache[id];
+  delete state.modelChoice[id];
   if (state.selectedId === id) state.selectedId = state.locations.length ? state.locations[0].id : null;
   saveState();
   renderSidebar();

@@ -35,6 +35,14 @@ past-month rainfall forecasts.
 - Metrics per feed: **MAE** (mean absolute error, mm), **bias** (mean signed error), **wet-day agreement** (share of days where feed and truth agreed on ≥1 mm). Lower MAE = better; the lowest is badged "most accurate".
 - Note: for UK locations Open-Meteo's `best_match` resolves to the UK Met Office model, so the two rows often match exactly — this is expected.
 
+## Forecast model selection
+- The **Rainfall** tab fetches from a *specific* model (`fetchWeather` adds `&models=<id>`). A single-model request returns the **same unsuffixed** daily/hourly keys, so `analyze()` is unchanged.
+- Choice is stored per location in `state.modelChoice` as `{ id, manual }`, persisted in `localStorage` (key `skycast.v1`).
+- **Auto** (default, `manual:false`): the lowest-MAE feed from the accuracy data, but feeds flagged `noPop` (Meteo-France — no rain-probability data, would show a misleading 0%) are skipped. Only applied once the Models tab has been loaded for that location.
+- **Manual**: the `Rain forecast model` `<select>` on the Models tab sets `manual:true` and the user's pick sticks.
+- If `state.modelChoice` is empty (Models tab never opened) the app uses `best_match` as before, so behaviour is unchanged for existing users.
+- Changing the model deletes the location's weather cache so the next render refetches with the new model; `ensureWeather(loc)` (triggered from `renderMain` when the cache is missing) handles the fetch.
+
 ## Conventions / gotchas
 - Tap handling on mobile uses the `onTap()` helper (pointer events) — do NOT switch these
   back to plain `click`, or iOS swallows the first tap while the keyboard is open.
