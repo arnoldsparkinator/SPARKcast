@@ -346,7 +346,7 @@
   .day-strip {
     display: grid;
     grid-auto-flow: column;
-    grid-auto-columns: minmax(64px, 1fr);
+    grid-auto-columns: minmax(76px, 1fr);
     gap: 8px;
     margin-top: 16px;
     overflow-x: auto;
@@ -362,11 +362,13 @@
   }
   .day.today-cell { border-color: rgba(78, 161, 255, 0.6); background: rgba(78, 161, 255, 0.15); }
   .day .dow { font-size: 0.72rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.6px; }
+  .day .date { font-size: 0.66rem; color: var(--muted); margin-top: 1px; }
   .day .ic { font-size: 1.5rem; margin: 6px 0; }
   .day .hi { font-weight: 700; font-size: 0.95rem; }
   .day .lo { color: var(--muted); font-size: 0.8rem; }
   .day .rain { color: var(--rain); font-size: 0.75rem; margin-top: 6px; min-height: 14px; }
   .day .pop { color: var(--muted); font-size: 0.68rem; margin-top: 2px; min-height: 12px; }
+  .day .wind { color: var(--muted); font-size: 0.68rem; margin-top: 2px; min-height: 12px; }
 
   .empty, .error {
     text-align: center;
@@ -645,9 +647,10 @@ async function fetchWeather(loc, model) {
   const u = new URL(FORECAST_URL);
   u.searchParams.set("latitude", loc.latitude);
   u.searchParams.set("longitude", loc.longitude);
-  u.searchParams.set("daily", "weather_code,precipitation_sum,precipitation_probability_max,temperature_2m_max,temperature_2m_min");
+  u.searchParams.set("daily", "weather_code,precipitation_sum,precipitation_probability_max,temperature_2m_max,temperature_2m_min,wind_speed_10m_max");
   u.searchParams.set("hourly", "precipitation,precipitation_probability");
-  u.searchParams.set("current", "temperature_2m,weather_code,precipitation");
+  u.searchParams.set("current", "temperature_2m,weather_code,precipitation,wind_speed_10m");
+  u.searchParams.set("wind_speed_unit", "mph");
   u.searchParams.set("past_days", "14");
   u.searchParams.set("forecast_days", "15");
   const use = model || resolveModel(loc);
@@ -703,6 +706,7 @@ function analyze(data) {
     pop: d.precipitation_probability_max ? (d.precipitation_probability_max[i] || 0) : 0,
     hi: d.temperature_2m_max ? d.temperature_2m_max[i] : null,
     lo: d.temperature_2m_min ? d.temperature_2m_min[i] : null,
+    wind: d.wind_speed_10m_max ? d.wind_speed_10m_max[i] : null,
     isToday: iso === todayIso,
   }));
 
@@ -735,9 +739,9 @@ function analyze(data) {
   const yesterdayLo = yesterday && yesterday.lo != null ? yesterday.lo : null;
   const yesterdayDiff = (todayHi != null && yesterdayHi != null) ? todayHi - yesterdayHi : null;
 
-  // Hourly series (next 24 hours from the current hour)
+  // Hourly series (next 72 hours from the current hour)
   let hourlyNext = [];
-  let next24Rain = 0, maxNext24Pop = 0;
+  let next72Rain = 0, maxNext72Pop = 0;
   const h = data.hourly;
   if (h && h.time && h.time.length) {
     let nowMs;
@@ -752,9 +756,9 @@ function analyze(data) {
       iso: t,
       rain: (h.precipitation ? (h.precipitation[i] || 0) : 0),
       pop: (h.precipitation_probability ? (h.precipitation_probability[i] || 0) : 0),
-    })).filter(x => new Date(x.iso).getTime() >= nowMs).slice(0, 24);
-    next24Rain = hourlyNext.reduce((a, b) => a + (b.rain || 0), 0);
-    maxNext24Pop = hourlyNext.reduce((m, b) => Math.max(m, b.pop || 0), 0);
+    })).filter(x => new Date(x.iso).getTime() >= nowMs).slice(0, 72);
+    next72Rain = hourlyNext.reduce((a, b) => a + (b.rain || 0), 0);
+    maxNext72Pop = hourlyNext.reduce((m, b) => Math.max(m, b.pop || 0), 0);
   }
 
   const futurePops = future.map(x => x.pop).filter(v => v != null);
@@ -764,7 +768,7 @@ function analyze(data) {
            wetPastDays, wetFutureDays, pastHi, futureHi, todayHi, tempDiff,
            tomorrow, tomorrowHi, tomorrowLo, tomorrowDiff,
            yesterday, yesterdayHi, yesterdayLo, yesterdayDiff,
-           hourlyNext, next24Rain, maxNext24Pop, maxFuturePop,
+           hourlyNext, next72Rain, maxNext72Pop, maxFuturePop,
            current: data.current || null };
 }
 
@@ -842,11 +846,13 @@ function dayStripHTML(a) {
     const dow = d.isToday ? "Today" : fmtDate(d.iso, { weekday: "short" });
     return '<div class="day' + (d.isToday ? " today-cell" : "") + '">' +
       '<div class="dow">' + dow + '</div>' +
+      '<div class="date">' + fmtDate(d.iso, { day: "numeric", month: "short" }) + '</div>' +
       '<div class="ic" title="' + escapeHtml(desc) + '">' + icon + '</div>' +
       '<div class="hi">' + (d.hi != null ? tempDeg(d.hi) : "—") + '</div>' +
       '<div class="lo">' + (d.lo != null ? tempDeg(d.lo) : "—") + '</div>' +
-      '<div class="rain">' + (d.rain > 0 ? "💧" + precipStr(d.rain) : "&nbsp;") + '</div>' +
+      '<div class="rain">' + (d.rain > 0 ? "💧" + precipStr(d.rain) + " " + precipLabel() : "&nbsp;") + '</div>' +
       '<div class="pop">' + (d.pop != null ? "☔" + d.pop + "%" : "") + '</div>' +
+      '<div class="wind">' + (d.wind != null ? "Max wind " + Math.round(d.wind) + " mph" : "&nbsp;") + '</div>' +
     '</div>';
   }).join("");
 }
@@ -918,20 +924,45 @@ function hourlyChartSVG(a) {
   const hrs = a.hourlyNext || [];
   if (!hrs.length) return '<div class="sub" style="padding:16px 0">Hourly data unavailable.</div>';
   const max = Math.max(0.2, ...hrs.map(h => h.rain));
-  const barW = 26, gap = 6, pad = 8, chartH = 110, labelH = 42;
+  const barW = 26, gap = 6, pad = 8, chartH = 110, labelH = 58;
   const W = hrs.length * (barW + gap) + pad * 2;
   const H = chartH + labelH;
+  const todayIso = a.today ? a.today.iso : hrs[0].iso.slice(0, 10);
+  const tmr = new Date(todayIso + "T12:00:00");
+  tmr.setDate(tmr.getDate() + 1);
+  const tomorrowIso = tmr.toLocaleDateString("en-CA");
   let svg = '<svg class="rainchart" width="' + W + '" height="' + H + '" viewBox="0 0 ' + W + ' ' + H + '">';
   svg += '<line x1="0" y1="' + chartH + '" x2="' + W + '" y2="' + chartH + '" stroke="rgba(255,255,255,0.15)" stroke-width="1"/>';
+
+  const groups = [];
+  hrs.forEach((h, i) => {
+    const dstr = h.iso.slice(0, 10);
+    if (!groups.length || groups[groups.length - 1].date !== dstr) groups.push({ date: dstr, start: i, end: i });
+    else groups[groups.length - 1].end = i;
+  });
+  groups.forEach(g => {
+    const x1 = pad + g.start * (barW + gap);
+    const x2 = pad + g.end * (barW + gap) + barW;
+    if (g.start > 0) {
+      const bx = x1 - gap / 2;
+      svg += '<line x1="' + bx + '" y1="0" x2="' + bx + '" y2="' + chartH + '" stroke="rgba(255,255,255,0.10)" stroke-width="1"/>';
+    }
+    const dl = g.date === todayIso ? "Today" : g.date === tomorrowIso ? "Tomorrow"
+      : fmtDate(g.date, { weekday: "short" }) + " " + new Date(g.date + "T12:00:00").getDate();
+    svg += '<text x="' + ((x1 + x2) / 2) + '" y="' + (chartH + 52) + '" text-anchor="middle" font-size="10" font-weight="600" fill="#9fc3ff">' + dl + '</text>';
+  });
 
   hrs.forEach((h, i) => {
     const x = pad + i * (barW + gap);
     const bh = Math.max(h.rain > 0 ? 2 : 1, (h.rain / max) * (chartH - 12));
     const y = chartH - bh;
     const op = (0.3 + 0.7 * (h.pop / 100)).toFixed(2);
-    const title = hourLabel(h.iso) + " — " + precipStr(h.rain) + " " + precipLabel() + ", " + h.pop + "% chance";
+    const title = fmtDate(h.iso.slice(0, 10), { weekday: "short", day: "numeric", month: "short" }) + " " + hourLabel(h.iso) + " — " + precipStr(h.rain) + " " + precipLabel() + ", " + h.pop + "% chance";
     svg += '<rect class="bar" x="' + x + '" y="' + y + '" width="' + barW + '" height="' + bh + '" rx="4" fill="rgba(79,195,247,' + op + ')">' +
            '<title>' + escapeHtml(title) + '</title></rect>';
+    if (precipVal(h.rain) >= 0.05) {
+      svg += '<text x="' + (x + barW / 2) + '" y="' + (y - 4) + '" text-anchor="middle" font-size="7" fill="#cfe6ff">' + precipStr(h.rain) + precipLabel() + '</text>';
+    }
     if (i % 3 === 0) {
       svg += '<text x="' + (x + barW / 2) + '" y="' + (chartH + 15) + '" text-anchor="middle" font-size="9" fill="#9fb0cc">' + hourLabel(h.iso) + '</text>';
       svg += '<text x="' + (x + barW / 2) + '" y="' + (chartH + 27) + '" text-anchor="middle" font-size="9" fill="' + (h.pop >= 50 ? "#7ec8ff" : "#6f86b8") + '">' + h.pop + '%</text>';
@@ -999,7 +1030,7 @@ function renderMain() {
         '<div class="hero-icon">' + curIcon + '</div>' +
         '<div>' +
           '<div class="hero-temp">' + (nowTemp != null ? Math.round(tempVal(nowTemp)) : "—") + '<span class="u">' + tempLabel() + '</span></div>' +
-          '<div class="hero-desc">' + escapeHtml(curDesc) + (cur && cur.precipitation > 0 ? ' &middot; ' + precipStr(cur.precipitation) + ' ' + precipLabel() + ' now' : '') + '</div>' +
+          '<div class="hero-desc">' + escapeHtml(curDesc) + (cur && cur.precipitation > 0 ? ' &middot; ' + precipStr(cur.precipitation) + ' ' + precipLabel() + ' now' : '') + (cur && cur.wind_speed_10m != null ? ' &middot; Wind ' + Math.round(cur.wind_speed_10m) + ' mph' : '') + '</div>' +
           (a.today ? '<div class="hero-range">Today H ' + (a.today.hi != null ? tempDeg(a.today.hi) : "—") + ' · L ' + (a.today.lo != null ? tempDeg(a.today.lo) : "—") + '</div>' : '') +
         '</div>' +
       '</div>' +
@@ -1046,13 +1077,13 @@ function renderMain() {
 
     '<section class="card">' +
       '<div class="chart-head">' +
-        '<h3>Next 24 hours</h3>' +
+        '<h3>Next 72 hours</h3>' +
         '<div class="chart-legend">' +
-          '<span>Rain next 24h: <strong style="color:#cfe6ff">' + precipStr(a.next24Rain) + ' ' + precipLabel() + '</strong></span>' +
-          '<span>Peak chance: <strong style="color:#cfe6ff">' + (a.maxNext24Pop || 0) + '%</strong></span>' +
+          '<span>Rain next 72h: <strong style="color:#cfe6ff">' + precipStr(a.next72Rain) + ' ' + precipLabel() + '</strong></span>' +
+          '<span>Peak chance: <strong style="color:#cfe6ff">' + (a.maxNext72Pop || 0) + '%</strong></span>' +
         '</div>' +
       '</div>' +
-      '<div class="sub" style="margin-top:6px">Bar height = rain amount, bar opacity = chance of rain. % shown every 3 hours.</div>' +
+      '<div class="sub" style="margin-top:6px">Each bar shows the rain expected that hour; bar opacity = chance of rain (% every 3 hours). Day labels mark each new day.</div>' +
       '<div class="chart-wrap">' + hourlyChartSVG(a) + '</div>' +
     '</section>' +
 
@@ -1081,7 +1112,7 @@ function renderMain() {
     '<div id="viewModels"' + (state.tab === "models" ? "" : " hidden") + '>' +
       '<section class="card"><div class="loading"><div class="spinner"></div> Loading model comparison...</div></section>' +
     '</div>' +
-    '<div class="foot">Data from <a href="https://open-meteo.com/" target="_blank" rel="noopener">Open-Meteo</a>. Rain in ' + precipLabel() + ', temperatures in ' + tempLabel() + '.</div>';
+    '<div class="foot">Data from <a href="https://open-meteo.com/" target="_blank" rel="noopener">Open-Meteo</a>. Rain in ' + precipLabel() + ', temperatures in ' + tempLabel() + ', wind in mph.</div>';
 
   document.getElementById("cBtn").addEventListener("click", () => setUnit("c"));
   document.getElementById("fBtn").addEventListener("click", () => setUnit("f"));
