@@ -340,6 +340,11 @@
 
   .chart-wrap { margin-top: 16px; overflow-x: auto; }
   svg.rainchart { display: block; }
+  .hourly-chart-layout { display: flex; margin-top: 16px; min-width: 0; }
+  .hourly-chart-layout .chart-wrap { margin-top: 0; min-width: 0; flex: 1; }
+  .wind-axis { display: block; flex: 0 0 40px; }
+  .wind-key { color: #ffd166; }
+  .chart-legend { flex-wrap: wrap; }
   .bar { transition: opacity 0.15s; }
   .bar:hover { opacity: 0.75; }
 
@@ -648,7 +653,7 @@ async function fetchWeather(loc, model) {
   u.searchParams.set("latitude", loc.latitude);
   u.searchParams.set("longitude", loc.longitude);
   u.searchParams.set("daily", "weather_code,precipitation_sum,precipitation_probability_max,temperature_2m_max,temperature_2m_min,wind_speed_10m_max");
-  u.searchParams.set("hourly", "precipitation,precipitation_probability");
+  u.searchParams.set("hourly", "precipitation,precipitation_probability,wind_speed_10m");
   u.searchParams.set("current", "temperature_2m,weather_code,precipitation,wind_speed_10m");
   u.searchParams.set("wind_speed_unit", "mph");
   u.searchParams.set("past_days", "14");
@@ -756,6 +761,7 @@ function analyze(data) {
       iso: t,
       rain: (h.precipitation ? (h.precipitation[i] || 0) : 0),
       pop: (h.precipitation_probability ? (h.precipitation_probability[i] || 0) : 0),
+      wind: h.wind_speed_10m && Number.isFinite(h.wind_speed_10m[i]) ? h.wind_speed_10m[i] : null,
     })).filter(x => new Date(x.iso).getTime() >= nowMs).slice(0, 72);
     next72Rain = hourlyNext.reduce((a, b) => a + (b.rain || 0), 0);
     maxNext72Pop = hourlyNext.reduce((m, b) => Math.max(m, b.pop || 0), 0);
@@ -852,7 +858,7 @@ function dayStripHTML(a) {
       '<div class="lo">' + (d.lo != null ? tempDeg(d.lo) : "—") + '</div>' +
       '<div class="rain">' + (d.rain > 0 ? "💧" + precipStr(d.rain) + " " + precipLabel() : "&nbsp;") + '</div>' +
       '<div class="pop">' + (d.pop != null ? "☔" + d.pop + "%" : "") + '</div>' +
-      '<div class="wind">' + (d.wind != null ? "Max wind " + Math.round(d.wind) + " mph" : "&nbsp;") + '</div>' +
+      '<div class="wind">' + (d.wind != null ? "Max wind " + Math.round(d.wind) + " mph<br>" + windDescription(d.wind) : "&nbsp;") + '</div>' +
     '</div>';
   }).join("");
 }
@@ -920,11 +926,42 @@ function hourLabel(iso) {
     : d.getHours() < 12 ? d.getHours() + "a" : (d.getHours() - 12) + "p";
 }
 
+// Beaufort descriptions for rounded mph, matching the displayed speed.
+// Source: Royal Meteorological Society, The Beaufort Wind Scale.
+function windDescription(mph) {
+  if (!Number.isFinite(mph) || mph < 0) return 'Unavailable';
+  const v = Math.round(mph);
+  if (v < 1) return 'Calm';
+  if (v <= 3) return 'Light air';
+  if (v <= 7) return 'Light breeze';
+  if (v <= 12) return 'Gentle breeze';
+  if (v <= 18) return 'Moderate breeze';
+  if (v <= 24) return 'Fresh breeze';
+  if (v <= 31) return 'Strong breeze';
+  if (v <= 38) return 'Near gale';
+  if (v <= 46) return 'Gale';
+  if (v <= 54) return 'Strong gale';
+  if (v <= 63) return 'Storm';
+  if (v <= 72) return 'Violent storm';
+  return 'Hurricane force';
+}
+function windSummary(a) {
+  const winds = (a.hourlyNext || []).map(h => h.wind).filter(Number.isFinite);
+  if (!winds.length) return 'Hourly wind data unavailable.';
+  const peak = Math.max(...winds);
+  return 'Peak wind next 72h: ' + Math.round(peak) + ' mph - ' + windDescription(peak).toLowerCase() + '.';
+}
+
 function hourlyChartSVG(a) {
   const hrs = a.hourlyNext || [];
   if (!hrs.length) return '<div class="sub" style="padding:16px 0">Hourly data unavailable.</div>';
   const max = Math.max(0.2, ...hrs.map(h => h.rain));
-  const barW = 26, gap = 6, pad = 8, chartH = 110, labelH = 58;
+  const barW = 26, gap = 6, pad = 8, chartH = 128, labelH = 58;
+  const plotTop = 18;
+  const highWind = hrs.filter(h => Number.isFinite(h.wind) && h.wind >= 14);
+  const hasWind = highWind.length > 0;
+  const windMax = Math.max(20, Math.ceil(Math.max(0, ...highWind.map(h => h.wind)) / 20) * 20);
+  const windY = v => chartH - (v / windMax) * (chartH - plotTop);
   const W = hrs.length * (barW + gap) + pad * 2;
   const H = chartH + labelH;
   const todayIso = a.today ? a.today.iso : hrs[0].iso.slice(0, 10);
@@ -932,6 +969,7 @@ function hourlyChartSVG(a) {
   tmr.setDate(tmr.getDate() + 1);
   const tomorrowIso = tmr.toLocaleDateString("en-CA");
   let svg = '<svg class="rainchart" width="' + W + '" height="' + H + '" viewBox="0 0 ' + W + ' ' + H + '">';
+  svg += '<title>Hourly rain and wind. Wind is shown only at 14 mph or above.</title>';
   svg += '<line x1="0" y1="' + chartH + '" x2="' + W + '" y2="' + chartH + '" stroke="rgba(255,255,255,0.15)" stroke-width="1"/>';
 
   const groups = [];
@@ -954,14 +992,22 @@ function hourlyChartSVG(a) {
 
   hrs.forEach((h, i) => {
     const x = pad + i * (barW + gap);
-    const bh = Math.max(h.rain > 0 ? 2 : 1, (h.rain / max) * (chartH - 12));
+    const bh = Math.max(h.rain > 0 ? 2 : 1, (h.rain / max) * (chartH - plotTop));
     const y = chartH - bh;
     const op = (0.3 + 0.7 * (h.pop / 100)).toFixed(2);
     const title = fmtDate(h.iso.slice(0, 10), { weekday: "short", day: "numeric", month: "short" }) + " " + hourLabel(h.iso) + " — " + precipStr(h.rain) + " " + precipLabel() + ", " + h.pop + "% chance";
+    const hasHourWind = Number.isFinite(h.wind) && h.wind >= 14;
+    const wy = hasHourWind ? windY(h.wind) : chartH;
+    const windHeight = chartH - wy;
+    const windTitle = hasHourWind ? fmtDate(h.iso.slice(0, 10), { weekday: 'short', day: 'numeric', month: 'short' }) + ' ' + hourLabel(h.iso) + ': wind ' + h.wind.toFixed(1) + ' mph - ' + windDescription(h.wind).toLowerCase() : '';
+    const windBar = hasHourWind ? '<rect class="wind-bar" x="' + x + '" y="' + wy + '" width="' + barW + '" height="' + windHeight + '" rx="4" fill="#ffd166"><title>' + escapeHtml(windTitle) + '</title></rect>' : '';
+    // Order by rendered height, not by comparing unlike mph and mm values.
+    if (windHeight > bh) svg += windBar;
     svg += '<rect class="bar" x="' + x + '" y="' + y + '" width="' + barW + '" height="' + bh + '" rx="4" fill="rgba(79,195,247,' + op + ')">' +
            '<title>' + escapeHtml(title) + '</title></rect>';
+    if (windHeight <= bh) svg += windBar;
     if (precipVal(h.rain) >= 0.05) {
-      svg += '<text x="' + (x + barW / 2) + '" y="' + (y - 4) + '" text-anchor="middle" font-size="7" fill="#cfe6ff">' + precipStr(h.rain) + precipLabel() + '</text>';
+      svg += '<text x="' + (x + (barW / 2)) + '" y="' + (y - 4) + '" text-anchor="middle" font-size="7" fill="#cfe6ff">' + precipStr(h.rain) + precipLabel() + '</text>';
     }
     if (i % 3 === 0) {
       svg += '<text x="' + (x + barW / 2) + '" y="' + (chartH + 15) + '" text-anchor="middle" font-size="9" fill="#9fb0cc">' + hourLabel(h.iso) + '</text>';
@@ -969,7 +1015,16 @@ function hourlyChartSVG(a) {
     }
   });
   svg += '</svg>';
-  return svg;
+  let axis = '';
+  if (hasWind) {
+    axis = '<svg class="wind-axis" width="40" height="' + H + '" viewBox="0 0 40 ' + H + '" role="img" aria-label="Wind speed scale in miles per hour"><text x="30" y="10" text-anchor="end" font-size="10" fill="#ffd166">mph</text>';
+    for (let v = 0; v <= windMax; v += windMax / 4) {
+      const y = windY(v);
+      axis += '<text x="30" y="' + (y + 3) + '" text-anchor="end" font-size="9" fill="#ffd166">' + Number(v.toFixed(1)) + '</text><line x1="33" x2="39" y1="' + y + '" y2="' + y + '" stroke="#ffd166"/>';
+    }
+    axis += '</svg>';
+  }
+  return axis + '<div class="chart-wrap">' + svg + '</div>';
 }
 
 function renderMain() {
@@ -1030,7 +1085,7 @@ function renderMain() {
         '<div class="hero-icon">' + curIcon + '</div>' +
         '<div>' +
           '<div class="hero-temp">' + (nowTemp != null ? Math.round(tempVal(nowTemp)) : "—") + '<span class="u">' + tempLabel() + '</span></div>' +
-          '<div class="hero-desc">' + escapeHtml(curDesc) + (cur && cur.precipitation > 0 ? ' &middot; ' + precipStr(cur.precipitation) + ' ' + precipLabel() + ' now' : '') + (cur && cur.wind_speed_10m != null ? ' &middot; Wind ' + Math.round(cur.wind_speed_10m) + ' mph' : '') + '</div>' +
+          '<div class="hero-desc">' + escapeHtml(curDesc) + (cur && cur.precipitation > 0 ? ' &middot; ' + precipStr(cur.precipitation) + ' ' + precipLabel() + ' now' : '') + (cur && cur.wind_speed_10m != null ? ' &middot; Wind ' + Math.round(cur.wind_speed_10m) + ' mph (' + windDescription(cur.wind_speed_10m).toLowerCase() + ')'  : '') + '</div>' +
           (a.today ? '<div class="hero-range">Today H ' + (a.today.hi != null ? tempDeg(a.today.hi) : "—") + ' · L ' + (a.today.lo != null ? tempDeg(a.today.lo) : "—") + '</div>' : '') +
         '</div>' +
       '</div>' +
@@ -1080,11 +1135,13 @@ function renderMain() {
         '<h3>Next 72 hours</h3>' +
         '<div class="chart-legend">' +
           '<span>Rain next 72h: <strong style="color:#cfe6ff">' + precipStr(a.next72Rain) + ' ' + precipLabel() + '</strong></span>' +
+          '<span class="wind-key">Wind bars: 14+ mph</span>' +
           '<span>Peak chance: <strong style="color:#cfe6ff">' + (a.maxNext72Pop || 0) + '%</strong></span>' +
         '</div>' +
       '</div>' +
-      '<div class="sub" style="margin-top:6px">Each bar shows the rain expected that hour; bar opacity = chance of rain (% every 3 hours). Day labels mark each new day.</div>' +
-      '<div class="chart-wrap">' + hourlyChartSVG(a) + '</div>' +
+      '<div class="sub" style="margin-top:6px">Blue bars show hourly rain; opacity = rain chance (% every 3 hours). Yellow bars show wind speed (not gusts) at 14 mph and above on the left mph scale. Bars overlap: the shorter bar is in front. No yellow bar means lower or unavailable wind. Day labels mark each new day.</div>' +
+      '<div class="sub wind-key" style="margin-top:8px">' + windSummary(a) + '</div>' +
+      '<div class="hourly-chart-layout">' + hourlyChartSVG(a) + '</div>' +
     '</section>' +
 
     '<section class="card">' +
@@ -1112,7 +1169,7 @@ function renderMain() {
     '<div id="viewModels"' + (state.tab === "models" ? "" : " hidden") + '>' +
       '<section class="card"><div class="loading"><div class="spinner"></div> Loading model comparison...</div></section>' +
     '</div>' +
-    '<div class="foot">Data from <a href="https://open-meteo.com/" target="_blank" rel="noopener">Open-Meteo</a>. Rain in ' + precipLabel() + ', temperatures in ' + tempLabel() + ', wind in mph.</div>';
+    '<div class="foot">Data from <a href="https://open-meteo.com/" target="_blank" rel="noopener">Open-Meteo</a>. Rain in ' + precipLabel() + ', temperatures in ' + tempLabel() + ', wind in mph. Wind descriptions use the <a href="https://www.rmets.org/metmatters/beaufort-wind-scale" target="_blank" rel="noopener">Beaufort scale</a>, not weather warnings.</div>';
 
   document.getElementById("cBtn").addEventListener("click", () => setUnit("c"));
   document.getElementById("fBtn").addEventListener("click", () => setUnit("f"));
