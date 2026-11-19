@@ -540,7 +540,7 @@ const FEEDS = [
 
 /* ============================ State ============================ */
 const state = {
-  locations: [],          // { id, name, admin1, country, latitude, longitude }
+  locations: [],          // { id, name, admin1, admin2, country, latitude, longitude }
   selectedId: null,
   unit: "c",              // 'c' | 'f'
   precip: "mm",           // 'mm' | 'in'
@@ -634,8 +634,16 @@ function wmo(code) { return WMO[code] || ["—", "❔"]; }
 function uid() { return Math.random().toString(36).slice(2, 10); }
 function placeName(loc) {
   const parts = [loc.name];
-  if (loc.admin1 && loc.admin1 !== loc.name) parts.push(loc.admin1);
+  if (loc.admin2 && loc.admin2 !== loc.name) parts.push(loc.admin2);
+  if (loc.admin1 && loc.admin1 !== loc.name && loc.admin1 !== loc.admin2) parts.push(loc.admin1);
   return parts.join(", ");
+}
+// Subtitle line for search results and the saved-location list: county/admin2
+// first so same-name places in one country can be told apart.
+function placeSub(parts, name) {
+  const out = [];
+  parts.forEach(p => { if (p && p !== name && out.indexOf(p) === -1) out.push(p); });
+  return out.join(", ");
 }
 function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -821,7 +829,7 @@ function renderSidebar() {
     li.innerHTML =
       '<div style="min-width:0;flex:1;">' +
         '<div class="li-name">' + escapeHtml(loc.name) + '</div>' +
-        '<div class="li-sub">' + escapeHtml(loc.admin1 || loc.country || "") + '</div>' +
+        '<div class="li-sub">' + escapeHtml(placeSub([loc.admin2, loc.admin1, loc.country], loc.name)) + '</div>' +
       '</div>' +
       right +
       '<button class="li-remove" title="Remove" data-remove="' + loc.id + '">✕</button>';
@@ -1724,6 +1732,7 @@ function wireSearch() {
     addLocation({
       name: it.name,
       admin1: it.admin1 || "",
+      admin2: it.admin2 || "",
       country: it.country || "",
       latitude: it.latitude,
       longitude: it.longitude,
@@ -1742,7 +1751,7 @@ function wireSearch() {
       if (!items.length) { results.innerHTML = '<li style="color:#9fb0cc">No matches</li>'; return; }
       results.innerHTML = items.map((it, i) =>
         '<li data-i="' + i + '">' + escapeHtml(it.name) +
-        '<div class="r-sub">' + escapeHtml([it.admin1, it.country].filter(Boolean).join(", ")) + '</div></li>'
+        '<div class="r-sub">' + escapeHtml(placeSub([it.admin2, it.admin1, it.country], it.name)) + '</div></li>'
       ).join("");
       Array.from(results.children).forEach((li, i) => onTap(li, () => choose(i)));
     } catch (e) {
