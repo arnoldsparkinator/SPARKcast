@@ -682,8 +682,8 @@ async function fetchWeather(loc, model) {
   u.searchParams.set("latitude", loc.latitude);
   u.searchParams.set("longitude", loc.longitude);
   u.searchParams.set("daily", "weather_code,precipitation_sum,precipitation_probability_max,temperature_2m_max,temperature_2m_min,wind_speed_10m_max");
-  u.searchParams.set("hourly", "precipitation,precipitation_probability,wind_speed_10m");
-  u.searchParams.set("current", "temperature_2m,weather_code,precipitation,wind_speed_10m");
+  u.searchParams.set("hourly", "precipitation,precipitation_probability,wind_speed_10m,relative_humidity_2m");
+  u.searchParams.set("current", "temperature_2m,weather_code,precipitation,wind_speed_10m,relative_humidity_2m");
   u.searchParams.set("wind_speed_unit", "mph");
   u.searchParams.set("past_days", "14");
   u.searchParams.set("forecast_days", "15");
@@ -879,7 +879,7 @@ function dayStripHTML(a) {
   return show.map(d => {
     const [desc, icon] = wmo(d.code);
     const dow = d.isToday ? "Today" : fmtDate(d.iso, { weekday: "short" });
-    return '<button type="button" data-day="' + d.iso + '" aria-haspopup="dialog" aria-label="' + escapeHtml(fmtDate(d.iso, { weekday: 'long', day: 'numeric', month: 'long' }) + ': rain and wind timings') + '" class="day' + (d.isToday ? " today-cell" : "") + '">' +
+    return '<button type="button" data-day="' + d.iso + '" aria-haspopup="dialog" aria-label="' + escapeHtml(fmtDate(d.iso, { weekday: 'long', day: 'numeric', month: 'long' }) + ': rain, wind and humidity details') + '" class="day' + (d.isToday ? " today-cell" : "") + '">' +
       '<div class="dow">' + dow + '</div>' +
       '<div class="date">' + fmtDate(d.iso, { day: "numeric", month: "short" }) + '</div>' +
       '<div class="ic" title="' + escapeHtml(desc) + '">' + icon + '</div>' +
@@ -901,13 +901,14 @@ function timingHours(data, iso) {
     iso: time,
     rain: Number.isFinite((h.precipitation || [])[i]) ? h.precipitation[i] : null,
     pop: Number.isFinite((h.precipitation_probability || [])[i]) ? h.precipitation_probability[i] : null,
-    wind: Number.isFinite((h.wind_speed_10m || [])[i]) ? h.wind_speed_10m[i] : null
+    wind: Number.isFinite((h.wind_speed_10m || [])[i]) ? h.wind_speed_10m[i] : null,
+    hum: Number.isFinite((h.relative_humidity_2m || [])[i]) ? h.relative_humidity_2m[i] : null
   })).filter(h => h.iso.slice(0, 10) === iso);
 }
 function dayTimingHTML(data, iso) {
   const hours = timingHours(data, iso);
-  const available = hours.filter(h => h.rain !== null || h.wind !== null);
-  if (!available.length) return '<p>Hourly rain and wind timings are not available for this day from the selected forecast model. The daily summary may still be available.</p>';
+  const available = hours.filter(h => h.rain !== null || h.wind !== null || h.hum !== null);
+  if (!available.length) return '<p>Hourly rain, wind and humidity timings are not available for this day from the selected forecast model. The daily summary may still be available.</p>';
   const clock = h => h.iso.slice(11, 16);
   // Rain is the preceding-hour total, so each reading ends its rain interval.
   // A 00:00 reading belongs to the previous day's final rain interval.
@@ -943,8 +944,17 @@ function dayTimingHTML(data, iso) {
     if (winds.length < 24) html += '<p class="timing-note">Wind data is missing for some hours.</p>';
   } else html += '<p>Hourly wind data is unavailable for this day.</p>';
   html += '<p class="timing-note">Wind is sustained speed, not gusts. All speeds are included here, including below 14 mph. Rain windows are approximate and can change; precipitation may include snow.</p>';
-  html += '<details><summary>Hour-by-hour readings</summary><p class="timing-note">Rain totals cover the hour ending at the listed time. Blank rain cells mean zero rain; missing readings say Unavailable. Chance is the hourly precipitation probability, where supplied. Wind is at the listed time.</p><table><thead><tr><th scope="col">Time</th><th scope="col">Rain (' + precipLabel() + ')</th><th scope="col">Chance</th><th scope="col">Wind</th></tr></thead><tbody>';
-  html += hours.map(h => '<tr><th scope="row">' + clock(h) + '</th><td>' + (h.rain === null ? 'Unavailable' : h.rain === 0 ? '' : Number(precipStr(h.rain)) === 0 ? (state.precip === 'in' ? '&lt;0.01' : '&lt;0.1') : precipStr(h.rain)) + '</td><td>' + (h.pop === null ? '-' : Math.round(h.pop) + '%') + '</td><td>' + (h.wind === null ? 'Unavailable' : Math.round(h.wind) + ' mph') + '</td></tr>').join('');
+  const hums = hours.filter(h => h.hum !== null);
+  html += '<h3>Relative humidity</h3>';
+  if (hums.length) {
+    const maxHum = Math.max(...hums.map(h => h.hum));
+    const minHum = Math.min(...hums.map(h => h.hum));
+    const avgHum = hums.reduce((s, h) => s + h.hum, 0) / hums.length;
+    html += '<p>Average <strong>' + Math.round(avgHum) + '%</strong>; range ' + Math.round(minHum) + '% - ' + Math.round(maxHum) + '%.</p>';
+    if (hums.length < 24) html += '<p class="timing-note">Humidity data is missing for some hours.</p>';
+  } else html += '<p>Hourly humidity data is unavailable for this day.</p>';
+  html += '<details><summary>Hour-by-hour readings</summary><p class="timing-note">Rain totals cover the hour ending at the listed time. Blank rain cells mean zero rain; missing readings say Unavailable. Chance is the hourly precipitation probability, where supplied. Wind and relative humidity are at the listed time.</p><table><thead><tr><th scope="col">Time</th><th scope="col">Rain (' + precipLabel() + ')</th><th scope="col">Chance</th><th scope="col">Wind</th><th scope="col">Humidity</th></tr></thead><tbody>';
+  html += hours.map(h => '<tr><th scope="row">' + clock(h) + '</th><td>' + (h.rain === null ? 'Unavailable' : h.rain === 0 ? '' : Number(precipStr(h.rain)) === 0 ? (state.precip === 'in' ? '&lt;0.01' : '&lt;0.1') : precipStr(h.rain)) + '</td><td>' + (h.pop === null ? '-' : Math.round(h.pop) + '%') + '</td><td>' + (h.wind === null ? 'Unavailable' : Math.round(h.wind) + ' mph') + '</td><td>' + (h.hum === null ? 'Unavailable' : Math.round(h.hum) + '%') + '</td></tr>').join('');
   return html + '</tbody></table></details>';
 }
 function openDayTiming(data, iso, loc, trigger) {
@@ -1188,7 +1198,7 @@ function renderMain() {
         '<div class="hero-icon">' + curIcon + '</div>' +
         '<div>' +
           '<div class="hero-temp">' + (nowTemp != null ? Math.round(tempVal(nowTemp)) : "—") + '<span class="u">' + tempLabel() + '</span></div>' +
-          '<div class="hero-desc">' + escapeHtml(curDesc) + (cur && cur.precipitation > 0 ? ' &middot; ' + precipStr(cur.precipitation) + ' ' + precipLabel() + ' now' : '') + (cur && cur.wind_speed_10m != null ? ' &middot; Wind ' + Math.round(cur.wind_speed_10m) + ' mph (' + windDescription(cur.wind_speed_10m).toLowerCase() + ')'  : '') + '</div>' +
+          '<div class="hero-desc">' + escapeHtml(curDesc) + (cur && cur.precipitation > 0 ? ' &middot; ' + precipStr(cur.precipitation) + ' ' + precipLabel() + ' now' : '') + (cur && cur.wind_speed_10m != null ? ' &middot; Wind ' + Math.round(cur.wind_speed_10m) + ' mph (' + windDescription(cur.wind_speed_10m).toLowerCase() + ')'  : '') + (cur && cur.relative_humidity_2m != null ? ' &middot; Humidity ' + Math.round(cur.relative_humidity_2m) + '%' : '') + '</div>' +
           (a.today ? '<div class="hero-range">Today H ' + (a.today.hi != null ? tempDeg(a.today.hi) : "—") + ' · L ' + (a.today.lo != null ? tempDeg(a.today.lo) : "—") + '</div>' : '') +
         '</div>' +
       '</div>' +
@@ -1805,3 +1815,4 @@ wireSearch();
 </script>
 </body>
 </html>
+
